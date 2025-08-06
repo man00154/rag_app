@@ -1,13 +1,14 @@
 import os
+import time
 import requests
 from bs4 import BeautifulSoup
-from langchain.document_loaders import PyPDFLoader, TextLoader
+from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.vectorstores import FAISS
-from langchain.embeddings.openai import OpenAIEmbeddings
+from langchain_community.vectorstores import FAISS
+from langchain_openai import OpenAIEmbeddings
 import pickle
 
-# PDF and HTML links
+# ---------------- PDF & HTML LINKS ---------------- #
 PDF_LINKS = {
     # Dell
     "PowerEdge Rack Servers Quick Reference Guide":
@@ -68,6 +69,34 @@ HTML_LINKS = {
     "IBM Storage Protect PDF Documentation Index": "https://www.ibm.com/docs/en/storage-protect/8.1.25?topic=pdf-files"
 }
 
+# ---------------- DATA DOWNLOAD FUNCTIONS ---------------- #
+def download_with_retry(url, path, name, max_retries=3):
+    """Download file with retry & PDF validation"""
+    for attempt in range(max_retries):
+        try:
+            print(f"Downloading: {name} (Attempt {attempt+1})")
+            r = requests.get(url, timeout=60)
+            r.raise_for_status()
+
+            # Check file type is PDF
+            if "application/pdf" not in r.headers.get("Content-Type", "").lower():
+                raise ValueError("Not a PDF file")
+
+            # Check file size (avoid tiny broken files)
+            if len(r.content) < 5000:
+                raise ValueError("File too small - likely broken")
+
+            with open(path, "wb") as f:
+                f.write(r.content)
+            print(f"Saved: {path}")
+            return True
+
+        except Exception as e:
+            print(f"Download failed for {name}: {e}")
+            time.sleep(3)
+    print(f"❌ Skipping {name} after {max_retries} failed attempts")
+    return False
+
 def ensure_data():
     os.makedirs("sample_data", exist_ok=True)
     os.makedirs("html_data", exist_ok=True)
@@ -76,13 +105,7 @@ def ensure_data():
     for name, url in PDF_LINKS.items():
         path = os.path.join("sample_data", name.replace(" ", "_") + ".pdf")
         if not os.path.exists(path):
-            try:
-                r = requests.get(url, timeout=30)
-                r.raise_for_status()
-                with open(path, "wb") as f:
-                    f.write(r.content)
-            except Exception as e:
-                print(f"Failed PDF: {name} — {e}")
+            download_with_retry(url, path, name)
 
     # Download HTML and save as .txt
     for name, url in HTML_LINKS.items():
@@ -95,15 +118,20 @@ def ensure_data():
                 text = soup.get_text(separator="\n", strip=True)
                 with open(path, "w", encoding="utf-8") as f:
                     f.write(text)
+                print(f"Saved HTML: {path}")
             except Exception as e:
                 print(f"Failed HTML: {name} — {e}")
 
+# ---------------- DATA LOADING FUNCTIONS ---------------- #
 def load_pdfs_from_folder(folder):
     docs = []
     for file in os.listdir(folder):
         if file.endswith(".pdf"):
-            loader = PyPDFLoader(os.path.join(folder, file))
-            docs.extend(loader.load())
+            try:
+                loader = PyPDFLoader(os.path.join(folder, file))
+                docs.extend(loader.load())
+            except Exception as e:
+                print(f"❌ Skipping {file} due to PDF error: {e}")
     return docs
 
 def load_html_from_folder(folder):
@@ -114,6 +142,7 @@ def load_html_from_folder(folder):
             docs.extend(loader.load())
     return docs
 
+# ---------------- VECTORSTORE FUNCTIONS ---------------- #
 def create_vectorstore(pdf_docs, html_docs, store_path="vectorstore"):
     embeddings = OpenAIEmbeddings()
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
