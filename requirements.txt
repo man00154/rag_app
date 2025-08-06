@@ -1,0 +1,10 @@
+streamlit
+langchain
+faiss-cpu
+pypdf
+pdfplumber
+requests
+beautifulsoup4
+openai
+tiktoken
+python-dotenv
